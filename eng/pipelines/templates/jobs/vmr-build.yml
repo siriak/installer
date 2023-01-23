@@ -118,10 +118,12 @@ jobs:
         mv "dotnet-$(Build.SourceVersion)" "$(sourcesPath)"
       displayName: Export VMR sources
       workingDirectory: $(Build.StagingDirectory)
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - ${{ if ne(variables['System.TeamProject'], 'public') }}:
     - script: cp "$(sourcesPath)/src/installer/NuGet.config" "$(sourcesPath)/test/Microsoft.DotNet.SourceBuild.SmokeTests/assets/online.NuGet.Config"
       displayName: Copy Test NuGet Config
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
     - task: Bash@3
       displayName: Setup Private Feeds Credentials
@@ -130,18 +132,21 @@ jobs:
         arguments: $(sourcesPath)/test/Microsoft.DotNet.SourceBuild.SmokeTests/assets/online.NuGet.Config $Token
       env:
         Token: $(dn-bot-dnceng-artifact-feeds-rw)
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - ${{ if ne(parameters.excludeSdkContentTests, 'true') }}:
     - download: current
       artifact: BlobArtifacts
       patterns: '**/dotnet-sdk-+([0-9]).+([0-9]).+([0-9])?(-@(alpha|preview|rc|rtm)*)-linux-${{ parameters.architecture }}.tar.gz'
       displayName: Download MSFT SDK
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - ${{ if ne(parameters.reuseBuildArtifactsFrom, '') }}:
     - download: current
       artifact: ${{ parameters.reuseBuildArtifactsFrom }}_${{ parameters.architecture }}_Artifacts
       patterns: '*.tar.gz'
       displayName: Download Previous Build
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
     - task: CopyFiles@2
       displayName: Copy Previous Build
@@ -149,6 +154,7 @@ jobs:
         SourceFolder: $(Pipeline.Workspace)/${{ parameters.reuseBuildArtifactsFrom }}_${{ parameters.architecture }}_Artifacts
         Contents: '*.tar.gz'
         TargetFolder: ${{ variables.sourcesPath }}/packages/archive/
+      condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - script: |
       set -x
@@ -167,6 +173,7 @@ jobs:
         eval rm -f "$previousSdkPath"
       fi
     displayName: Prep the Build
+    condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - script: |
       set -x
@@ -191,6 +198,7 @@ jobs:
 
       docker run --rm -v "$(sourcesPath):/vmr" -w /vmr ${customRunArgs} ${{ parameters.container }} ./build.sh --clean-while-building $(additionalBuildArgs) ${customBuildArgs}
     displayName: Build
+    condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   - script: |
       set -x
@@ -212,6 +220,7 @@ jobs:
 
       docker run --rm $dockerVolumeArgs -w /vmr $dockerEnvArgs ${{ parameters.container }} ./build.sh $poisonArg --run-smoke-test $(additionalBuildArgs) -- -p:SmokeTestConsoleVerbosity=detailed
     displayName: Run Tests
+    condition: and(succeeded(), ne(variables['disableVmrBuild'], 'true'))
 
   # Don't use CopyFiles@2 as it encounters permissions issues because it indexes all files in the source directory graph.
   - script: |
@@ -231,17 +240,17 @@ jobs:
       find test/ -type f -name "Updated*.txt" -exec cp {} --parents -t ${targetFolder} \;
     displayName: Prepare BuildLogs staging directory
     continueOnError: true
-    condition: succeededOrFailed()
+    condition: and(succeededOrFailed(), ne(variables['disableVmrBuild'], 'true'))
 
   - publish: '$(Build.StagingDirectory)/BuildLogs'
     artifact: $(Agent.JobName)_BuildLogs_Attempt$(System.JobAttempt)
     displayName: Publish BuildLogs
     continueOnError: true
-    condition: succeededOrFailed()
+    condition: and(succeededOrFailed(), ne(variables['disableVmrBuild'], 'true'))
 
   - task: PublishTestResults@2
     displayName: Publish Test Results
-    condition: succeededOrFailed()
+    condition: and(succeededOrFailed(), ne(variables['disableVmrBuild'], 'true'))
     continueOnError: true
     inputs:
       testRunner: vSTest
@@ -254,5 +263,5 @@ jobs:
   - publish: '${{ variables.sourcesPath }}/artifacts/${{ parameters.architecture }}/Release/'
     artifact: $(Agent.JobName)_Artifacts
     displayName: Publish Artifacts
-    condition: succeededOrFailed()
+    condition: and(succeededOrFailed(), ne(variables['disableVmrBuild'], 'true'))
     continueOnError: true
