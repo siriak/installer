@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -15,26 +16,17 @@ namespace EndToEnd.Tests
 {
     public class ProjectBuildTests : TestBase
     {
-        private static readonly string currentTfm = "net8.0";
-
         [Fact]
         public void ItCanNewRestoreBuildRunCleanMSBuildProject()
         {
             var directory = TestAssets.CreateTestDirectory();
             string projectDirectory = directory.FullName;
 
-            string newArgs = "console --debug:ephemeral-hive --no-restore";
+            string newArgs = "console --no-restore";
             new NewCommandShim()
                 .WithWorkingDirectory(projectDirectory)
                 .Execute(newArgs)
                 .Should().Pass();
-
-            string projectPath = Path.Combine(projectDirectory, directory.Name + ".csproj");
-            var project = XDocument.Load(projectPath);
-            var ns = project.Root.Name.Namespace;
-            project.Root.Element(ns + "PropertyGroup")
-                .Element(ns + "TargetFramework").Value = currentTfm;
-            project.Save(projectPath);
 
             new RestoreCommand()
                 .WithWorkingDirectory(projectDirectory)
@@ -68,7 +60,7 @@ namespace EndToEnd.Tests
             var directory = TestAssets.CreateTestDirectory();
             string projectDirectory = directory.FullName;
 
-            string newArgs = "console --debug:ephemeral-hive --no-restore";
+            string newArgs = "console --no-restore";
             new NewCommandShim()
                 .WithWorkingDirectory(projectDirectory)
                 .Execute(newArgs)
@@ -80,9 +72,6 @@ namespace EndToEnd.Tests
             var ns = project.Root.Name.Namespace;
 
             project.Root.Attribute("Sdk").Value = "Microsoft.NET.Sdk.Web";
-            project.Root.Element(ns + "PropertyGroup")
-                .Element(ns + "TargetFramework").Value = currentTfm;
-
             project.Save(projectPath);
 
             new BuildCommand()
@@ -115,14 +104,14 @@ namespace EndToEnd.Tests
                 .Execute(newArgs)
                 .Should().Pass();
 
-            string publishArgs="-r win-arm64";
+            string publishArgs = "-r win-arm64";
             new PublishCommand()
                 .WithWorkingDirectory(projectDirectory)
                 .Execute(publishArgs)
                 .Should().Pass();
 
             var selfContainedPublishDir = new DirectoryInfo(projectDirectory)
-                .Sub("bin").Sub("Debug").GetDirectories().FirstOrDefault()
+                .Sub("bin").Sub(TargetFramework != "current" ? "Debug" : "Release").GetDirectories().FirstOrDefault()
                 .Sub("win-arm64").Sub("publish");
 
             selfContainedPublishDir.Should().HaveFilesMatching("System.Windows.Forms.dll", SearchOption.TopDirectoryOnly);
@@ -149,14 +138,14 @@ namespace EndToEnd.Tests
                 .Execute(newArgs)
                 .Should().Pass();
 
-            string publishArgs="-r win-arm64";
+            string publishArgs = "-r win-arm64";
             new PublishCommand()
                 .WithWorkingDirectory(projectDirectory)
                 .Execute(publishArgs)
                 .Should().Pass();
 
             var selfContainedPublishDir = new DirectoryInfo(projectDirectory)
-                .Sub("bin").Sub("Debug").GetDirectories().FirstOrDefault()
+                .Sub("bin").Sub(TargetFramework != "current" ? "Debug" : "Release").GetDirectories().FirstOrDefault()
                 .Sub("win-arm64").Sub("publish");
 
             selfContainedPublishDir.Should().HaveFilesMatching("PresentationCore.dll", SearchOption.TopDirectoryOnly);
@@ -236,7 +225,7 @@ namespace EndToEnd.Tests
             DirectoryInfo directory = TestAssets.CreateTestDirectory(identifier: templateName);
             string projectDirectory = directory.FullName;
 
-            string newArgs = $"{templateName} --debug:ephemeral-hive";
+            string newArgs = $"{templateName}";
 
             new NewCommandShim()
                 .WithWorkingDirectory(projectDirectory)
@@ -246,6 +235,53 @@ namespace EndToEnd.Tests
             //check if the template created files
             Assert.True(directory.Exists);
             Assert.True(directory.EnumerateFileSystemInfos().Any());
+
+            // delete test directory for some tests so we aren't leaving behind non-compliant nuget files
+            if (templateName.Equals("nugetconfig"))
+            {
+                directory.Delete(true);
+            }
+        }
+
+        [Theory]
+        // microsoft.dotnet.common.itemtemplates templates
+        [InlineData("class")]
+        [InlineData("struct")]
+        [InlineData("enum")]
+        [InlineData("record")]
+        [InlineData("interface")]
+        [InlineData("class", "C#")]
+        [InlineData("class", "VB")]
+        [InlineData("struct", "VB")]
+        [InlineData("enum", "VB")]
+        [InlineData("interface", "VB")]
+        public void ItCanCreateItemTemplateWithProjectRestriction(string templateName, string language = "")
+        {
+            var languageExtensionMap = new Dictionary<string, string>()
+            {
+                { "", ".cs" },
+                { "C#", ".cs" },
+                { "VB", ".vb" }
+            };
+
+            DirectoryInfo directory = InstantiateProjectTemplate("classlib", language, withNoRestore: false);
+            string projectDirectory = directory.FullName;
+            string expectedItemName = $"TestItem_{templateName}";
+            string newArgs = $"{templateName} --name {expectedItemName} --debug:ephemeral-hive";
+            if (!string.IsNullOrWhiteSpace(language))
+            {
+                newArgs += $" --language {language}";
+            }
+
+            new NewCommandShim()
+                .WithWorkingDirectory(projectDirectory)
+                .Execute(newArgs)
+                .Should().Pass();
+
+            //check if the template created files
+            Assert.True(directory.Exists);
+            Assert.True(directory.EnumerateFileSystemInfos().Any());
+            Assert.True(directory.GetFile($"{expectedItemName}.{languageExtensionMap[language]}") != null);
         }
 
         [WindowsOnlyTheory]
@@ -329,7 +365,7 @@ namespace EndToEnd.Tests
         public void ItCanCreateTemplateWithDefaultFramework(string templateName)
         {
             string framework = DetectExpectedDefaultFramework(templateName);
-            TestTemplateCreateAndBuild(templateName, build: false, framework: framework);
+            TestTemplateCreateAndBuild(templateName, build: false, framework: framework, deleteTestDirectory: true);
         }
 
         /// <summary>
@@ -394,46 +430,16 @@ namespace EndToEnd.Tests
             int latestMajorVersion = runtimeFolders.Select(folder => int.Parse(Path.GetFileName(folder).Split('.').First())).Max();
             if (latestMajorVersion == 8)
             {
-                if (template.StartsWith("blazor")
-                    || template.StartsWith("mstest")
-                    || template.StartsWith("classlib")
-                    || template.StartsWith("console")
-                    || template.StartsWith("nunit")
-                    || template.StartsWith("xunit")
-                    || template.StartsWith("xunit")
-                    || template.StartsWith("wpf")
-                    || template.StartsWith("winforms")
-                    || template.StartsWith("mvc")
-                    || template.StartsWith("web")
-                    || template.StartsWith("worker")
-                    || template.StartsWith("razor")
-                    || template.StartsWith("grpc")
-                    || template.StartsWith("angular")
-                    || template.StartsWith("react"))
-                {
-                    return "net7.0";
-                }
                 return $"net{latestMajorVersion}.0";
             }
 
             throw new Exception("Unsupported version of SDK");
         }
 
-        private static void TestTemplateCreateAndBuild(string templateName, bool build = true, bool selfContained = false, string language = "", string framework = "")
+        private static void TestTemplateCreateAndBuild(string templateName, bool build = true, bool selfContained = false, string language = "", string framework = "", bool deleteTestDirectory = false)
         {
-            DirectoryInfo directory = TestAssets.CreateTestDirectory(identifier: string.IsNullOrWhiteSpace(language) ? templateName : $"{templateName}[{language}]");
+            DirectoryInfo directory = InstantiateProjectTemplate(templateName, language);
             string projectDirectory = directory.FullName;
-
-            string newArgs = $"{templateName} --debug:ephemeral-hive --no-restore";
-            if (!string.IsNullOrWhiteSpace(language))
-            {
-                newArgs += $" --language {language}";
-            }
-
-            new NewCommandShim()
-                .WithWorkingDirectory(projectDirectory)
-                .Execute(newArgs)
-                .Should().Pass();
 
             if (!string.IsNullOrWhiteSpace(framework))
             {
@@ -458,13 +464,13 @@ namespace EndToEnd.Tests
                 {
                     buildArgs += $" --framework {framework}";
                 }
-                
+
                 // Remove this (or formalize it) after https://github.com/dotnet/installer/issues/12479 is resolved.
                 if (language == "F#")
                 {
                     buildArgs += $" /p:_NETCoreSdkIsPreview=true";
                 }
-            
+
                 string dotnetRoot = Path.GetDirectoryName(RepoDirectoriesProvider.DotnetUnderTest);
                 new BuildCommand()
                      .WithEnvironmentVariable("PATH", dotnetRoot) // override PATH since razor rely on PATH to find dotnet
@@ -472,6 +478,34 @@ namespace EndToEnd.Tests
                      .Execute(buildArgs)
                      .Should().Pass();
             }
+
+            // delete test directory for some tests so we aren't leaving behind non-compliant package files
+            if (deleteTestDirectory)
+            {
+                directory.Delete(true);
+            }
+        }
+
+        private static DirectoryInfo InstantiateProjectTemplate(string templateName, string language = "", bool withNoRestore = true)
+        {
+            DirectoryInfo directory = TestAssets.CreateTestDirectory(
+                identifier: string.IsNullOrWhiteSpace(language)
+                ? templateName
+                : $"{templateName}[{language}]");
+            string projectDirectory = directory.FullName;
+
+            string newArgs = $"{templateName} --debug:ephemeral-hive {(withNoRestore ? "--no-restore" : "")}";
+            if (!string.IsNullOrWhiteSpace(language))
+            {
+                newArgs += $" --language {language}";
+            }
+
+            new NewCommandShim()
+                .WithWorkingDirectory(projectDirectory)
+                .Execute(newArgs)
+                .Should().Pass();
+
+            return directory;
         }
     }
 }
